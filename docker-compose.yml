@@ -1,0 +1,74 @@
+version: "3.8"
+services:
+  wait-for-db:
+    image: busybox
+    command: >
+      sh -c "until nc -z -v -w30 10.0.131.89 3306; do
+        echo 'Waiting for MySQL...';
+        sleep 5;
+      done && echo 'MySQL is ready!'"
+
+  wordpress1:
+    image: wordpress:6.4-apache
+    container_name: wordpress1
+    depends_on:
+      wait-for-db:
+        condition: service_completed_successfully
+    environment:
+      WORDPRESS_DB_HOST: ${WORDPRESS_DB_HOST}
+      WORDPRESS_DB_USER: ${WORDPRESS_DB_USER}
+      WORDPRESS_DB_PASSWORD: ${WORDPRESS_DB_PASSWORD}
+      WORDPRESS_DB_NAME: ${WORDPRESS_DB_NAME}
+    ports:
+      - "8080:80"
+    volumes:
+      # Share the entire WordPress install (including wp-config.php) via EFS
+      # so both containers see the same config and salts without defining them here.
+      - /mnt/efs/wordpress:/var/www/html
+      # Explicitly persist only uploads on a separate EFS path (assignment requirement)
+      - /mnt/efs/uploads:/var/www/html/wp-content/uploads
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+
+  wordpress2:
+    image: wordpress:6.4-apache
+    container_name: wordpress2
+    depends_on:
+      wordpress1:
+        condition: service_healthy
+    environment:
+      WORDPRESS_DB_HOST: ${WORDPRESS_DB_HOST}
+      WORDPRESS_DB_USER: ${WORDPRESS_DB_USER}
+      WORDPRESS_DB_PASSWORD: ${WORDPRESS_DB_PASSWORD}
+      WORDPRESS_DB_NAME: ${WORDPRESS_DB_NAME}
+    ports:
+      - "8081:80"
+    volumes:
+      - /mnt/efs/wordpress:/var/www/html
+      - /mnt/efs/uploads:/var/www/html/wp-content/uploads
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+
+  nginx:
+    image: nginx:latest
+    container_name: nginx_lb
+    depends_on:
+      wordpress1:
+        condition: service_healthy
+      wordpress2:
+        condition: service_healthy
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "80:80"
+    restart: always
